@@ -44,6 +44,10 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Sampling temperature (default: 0.1).")
     p.add_argument("--max-iterations", type=int, default=None,
                    help="Cap on tool-call loop iterations.")
+    p.add_argument("--think", dest="think", action="store_true", default=False,
+                   help="Enable the model's thinking/reasoning phase "
+                        "(default: off — small models can exhaust the "
+                        "context window thinking).")
     p.add_argument("--yolo", action="store_true",
                    help="Auto-approve all file writes and shell commands.")
     p.add_argument("--no-sandbox", action="store_true",
@@ -130,6 +134,8 @@ def _apply_args(cfg: Config, args: argparse.Namespace) -> None:
         os.makedirs(cfg.workspace, exist_ok=True)
     if args.chat:
         cfg.chat = True
+    if args.think:
+        cfg.think = args.think
 # -- session persistence ------------------------------------------------
 
 def _load_session(path: str) -> list:
@@ -176,7 +182,8 @@ def _banner(cfg: Config, session_file: str, resumed: bool) -> None:
     print(f" server    : {cfg.ollama_url}")
     print(f" workspace : {cfg.workspace}")
     print(f" session   : {session_file} ({'resumed' if resumed else 'new'})")
-    print(f" context   : {cfg.num_ctx} tokens | temp {cfg.temperature}")
+    print(f" context   : {cfg.num_ctx} tokens | temp {cfg.temperature} "
+          f"| think {'on' if cfg.think else 'off'}")
     print(f" approve   : {'auto (--yolo)' if cfg.auto_approve else 'prompted'}")
     print(" Ctrl+C stops the current task; 'exit' quits & saves for later.")
     print(" Type a task, then Enter. 'new' clears the conversation.")

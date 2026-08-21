@@ -36,6 +36,10 @@ class Config:
     max_iterations: int = 25
     # YOLO mode: auto-approve all file writes / shell commands.
     auto_approve: bool = False
+    # Disable the model's reasoning/"thinking" phase (qwen3.5-class models).
+    # Off by default: small local models burn their context window thinking
+    # and can return an empty answer when it runs out mid-thought.
+    think: bool = False
     # Restrict file access to the workspace directory tree.
     sandbox: bool = True
     # Force purely conversational mode (no tools) even for tasks.

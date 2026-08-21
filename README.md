@@ -1,6 +1,6 @@
 <div align="center">
 
-[![Version](https://img.shields.io/badge/version-0.3.0-8B5CF6?style=for-the-badge)](https://github.com/gmoralesm-dev/ollagent/releases)
+[![Version](https://img.shields.io/badge/version-0.4.0-8B5CF6?style=for-the-badge)](https://github.com/gmoralesm-dev/ollagent/releases)
 [![Python](https://img.shields.io/badge/python-3.9%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-green?style=for-the-badge)](LICENSE)
 [![Stars](https://img.shields.io/github/stars/gmoralesm-dev/ollagent?style=for-the-badge&color=yellow)](https://github.com/gmoralesm-dev/ollagent/stargazers)
@@ -19,13 +19,13 @@ Ollagent brings the Cline / Aider / Agy agentic workflow to models running fully
 ```
 you give a task
       ↓
-ollama proposes a tool call        {"tool": "edit_file", "arguments": {...}}
+ollama proposes a tool call        read_file(path="main.py")   ← native function calling
       ↓
 ollagent executes it for real      (reads/writes files, runs bash)
       ↓
 result feeds back as observation   [exit code 0] ...
       ↓
-repeat until done                  {"done": true, "answer": "..."}
+repeat until done                  done(summary="...")
 ```
 
 It also knows when **not** to use tools — casual questions get plain conversational answers, coding tasks get the full tool loop.
@@ -41,7 +41,7 @@ It also knows when **not** to use tools — casual questions get plain conversat
 | ⏹️ **Stop anytime** | `Ctrl+C` halts mid-task cleanly — no broken state |
 | 💾 **Resumable sessions** | conversation auto-saves; pick it back up later |
 | 🔒 **Sandboxed by default** | file access confined to your workspace; approval prompts before writes/commands |
-| 🛡️ **Small-model guardrails** | smart-quote sanitizing, empty-response retry with context back-off |
+| 🛡️ **Small-model guardrails** | smart-quote sanitizing, truncated-response retry with automatic context growth |
 | 🧩 **Zero dependencies** | pure Python stdlib — nothing to pip install |
 
 ## 🚀 Quick start
@@ -65,7 +65,7 @@ python3 -m ollagent            # Ctrl+C stops a task, 'exit' saves & quits,
                                # run again in the same folder to resume
 ```
 
-> **CPU-only tip:** use `--ctx 4096`. Small models return empty responses at large context windows when RAM-bound — Ollagent auto-retries smaller, but starting low is faster.
+> **CPU-only tip:** use `--ctx 4096` and leave thinking off (the default) — reasoning models can burn the whole window thinking. If a reply comes back empty, Ollagent auto-retries with a larger context.
 ## 🧠 Chat vs Agent — how routing works
 
 Every message is routed before the model sees it:
@@ -99,6 +99,7 @@ python3 -m ollagent --help
   --ctx N                context window in tokens
   --temp F               sampling temperature (default 0.1)
   --max-iterations N     cap on tool-call loop iterations
+  --think                enable the model's thinking/reasoning phase (default off)
   --cwd DIR              workspace directory
   --session FILE         session file to load/save
   --fresh                start a fresh conversation
@@ -121,15 +122,16 @@ ollagent/
 
 Design decisions worth knowing:
 
-- **JSON-mode tool calls** instead of native function calling — far more reliable across small local models, with a recovery path when the model emits malformed JSON.
+- **Native tool calling with JSON-prompt fallback** — models that advertise the `tools` capability use Ollama's native function calling (`message.tool_calls`), which removes fragile JSON parsing entirely. Models without it automatically fall back to the prompt-based JSON protocol.
+- **Thinking off by default (`--think` to enable)** — reasoning models like qwen3.5 can spend the whole context window thinking and return an empty answer; Ollagent disables the thinking phase unless you ask for it.
 - **Smart-quote sanitizer** — small models love writing `’` instead of `'`, which breaks code. Ollagent normalizes typographic quotes on every write/edit to code files.
-- **Empty-response back-off** — small models on RAM-constrained machines can return empty strings at large context windows. Ollagent halves the context and retries automatically.
+- **Empty-response retry grows the context** — when a model stops with an empty reply (typically `done_reason: "length"` after a long thinking phase), shrinking the window makes it worse, so Ollagent doubles `num_ctx` (up to 32k) and retries instead.
 
 ## 🔧 Ollama troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| Empty / blank responses | lower `--ctx` (e.g. `4096`); Ollagent also auto-retries |
+| Empty / blank responses | leave thinking off; Ollagent auto-retries with a larger `--ctx` |
 | Model reloads every run | `export OLLAMA_KEEP_ALIVE=-1` on the server |
 | Browser apps get CORS errors | `export OLLAMA_ORIGINS="*"` (not needed for this CLI) |
 | Remote Ollama | `export OLLAMA_HOST=0.0.0.0:11434`, then `--url http://host:11434` |

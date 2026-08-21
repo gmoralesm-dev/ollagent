@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import urllib.error
 import urllib.request
-from typing import Any, List, Mapping
+from typing import Any, List, Mapping, Optional
 
 from .config import Config
 
@@ -75,6 +75,22 @@ class Ollama:
             return []
 
     # -- model interaction ---------------------------------------------
+    def capabilities(self) -> List[str]:
+        """Ask /api/show what the model supports (e.g. ['tools', 'thinking'])."""
+        try:
+            req = urllib.request.Request(
+                f"{self.base}/api/show",
+                data=json.dumps({"model": self.cfg.model}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return list(json.loads(resp.read().decode("utf-8"))
+                            .get("capabilities", []))
+        except (urllib.error.URLError, urllib.error.HTTPError,
+                TimeoutError, json.JSONDecodeError):
+            return []
+
     def chat(
         self,
         messages: List[Mapping[str, Any]],
@@ -82,20 +98,40 @@ class Ollama:
         temperature: float,
         num_ctx: int,
         format_json: bool = True,
-    ) -> str:
-        """Send a chat request and return the assistant's text reply."""
+        tools: Optional[List[Mapping[str, Any]]] = None,
+    ) -> tuple[str, List[Mapping[str, Any]], str]:
+        """Send a chat request.
+
+        Returns:
+            (content, tool_calls, done_reason) — the assistant's text reply,
+            any native tool calls the model made, and why generation stopped
+            ("stop", "length", ...). `content` may be empty when the stop
+            reason is "length".
+        """
         payload: dict[str, Any] = {
             "model": self.cfg.model,
             "messages": messages,
             "stream": False,
+            "think": self.cfg.think,
             "options": {
                 "temperature": temperature,
                 "num_ctx": num_ctx,
             },
         }
-        if format_json:
+        if tools:
+            # Native tool calling: Ollama enforces the schema and returns
+            # structured message.tool_calls. Mutually exclusive with the
+            # JSON-format prompt hack.
+            payload["tools"] = tools
+        elif format_json:
             # Tells Ollama the response must be valid JSON.
             payload["format"] = "json"
         resp = _post(f"{self.base}/api/chat", payload)
         data = resp.json()
-        return data["message"]["content"]
+        msg = data.get("message") or {}
+        tool_calls = msg.get("tool_calls") or []
+        return (
+            str(msg.get("content") or ""),
+            [tc for tc in tool_calls if isinstance(tc, dict)],
+            str(data.get("done_reason") or ""),
+        )
