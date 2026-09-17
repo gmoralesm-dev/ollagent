@@ -74,6 +74,21 @@ class Ollama:
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError):
             return []
 
+    def running_models(self) -> List[Mapping[str, Any]]:
+        """Models currently resident, from /api/ps.
+
+        Each entry carries ``size`` (total footprint) and ``size_vram`` (the
+        part living in VRAM), which is how Ollagent knows whether a model is
+        actually GPU accelerated. Returns [] when nothing is loaded.
+        """
+        try:
+            with urllib.request.urlopen(f"{self.base}/api/ps", timeout=10) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                return list(data.get("models", []))
+        except (urllib.error.URLError, urllib.error.HTTPError,
+                TimeoutError, json.JSONDecodeError):
+            return []
+
     # -- model interaction ---------------------------------------------
     def capabilities(self) -> List[str]:
         """Ask /api/show what the model supports (e.g. ['tools', 'thinking'])."""
@@ -118,6 +133,9 @@ class Ollama:
                 "num_ctx": num_ctx,
             },
         }
+        if self.cfg.keep_alive:
+            # Keep the model resident (and therefore offloaded) between runs.
+            payload["keep_alive"] = self.cfg.keep_alive
         if tools:
             # Native tool calling: Ollama enforces the schema and returns
             # structured message.tool_calls. Mutually exclusive with the
@@ -135,3 +153,34 @@ class Ollama:
             [tc for tc in tool_calls if isinstance(tc, dict)],
             str(data.get("done_reason") or ""),
         )
+
+    # -- one-shot generation (used by the GPU benchmark) ----------------
+    def generate(
+        self,
+        prompt: str,
+        *,
+        model: Optional[str] = None,
+        num_ctx: int,
+        num_predict: int,
+        temperature: float = 0.2,
+        keep_alive: Optional[str] = None,
+    ) -> Mapping[str, Any]:
+        """Raw /api/generate response, including the timing fields.
+
+        Unlike :meth:`chat` this returns the whole payload, because the
+        benchmark needs ``load_duration``/``prompt_eval_*``/``eval_*`` to turn
+        raw timers into tokens per second.
+        """
+        payload: dict[str, Any] = {
+            "model": model or self.cfg.model,
+            "prompt": prompt,
+            "stream": False,
+            "options": {
+                "temperature": temperature,
+                "num_ctx": num_ctx,
+                "num_predict": num_predict,
+            },
+        }
+        if keep_alive:
+            payload["keep_alive"] = keep_alive
+        return _post(f"{self.base}/api/generate", payload).json()

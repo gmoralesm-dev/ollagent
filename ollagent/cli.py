@@ -20,6 +20,7 @@ import os
 import sys
 
 from . import __version__
+from . import gpu
 from .agent import Agent
 from .client import Ollama, OllamaError
 from .config import Config, from_env
@@ -64,6 +65,22 @@ def _build_parser() -> argparse.ArgumentParser:
                         "Questions are auto-detected as chat without this flag.")
     p.add_argument("--list-models", action="store_true",
                    help="List models on the Ollama server and exit.")
+    p.add_argument("--gpu", action="store_true",
+                   help="Report GPU/VRAM status, how much of each loaded model "
+                        "is offloaded, and which installed models fit in VRAM, "
+                        "then exit.")
+    p.add_argument("--benchmark", nargs="?", const="", default=None,
+                   metavar="MODEL",
+                   help="Measure real tokens/second and the GPU offload ratio "
+                        "for MODEL (default: the configured model), then exit.")
+    p.add_argument("--auto-fit", action="store_true",
+                   help="Shrink --ctx automatically so the model fits in VRAM "
+                        "and stays on the GPU.")
+    p.add_argument("--no-gpu-check", action="store_true",
+                   help="Skip the startup warning about CPU-bound inference.")
+    p.add_argument("--keepalive", default=None, metavar="DURATION",
+                   help="Keep the model loaded between runs (e.g. 30m, or -1 "
+                        "for forever). Default: the server's own setting.")
     return p
 
 
@@ -136,6 +153,12 @@ def _apply_args(cfg: Config, args: argparse.Namespace) -> None:
         cfg.chat = True
     if args.think:
         cfg.think = args.think
+    if args.auto_fit:
+        cfg.auto_fit = True
+    if args.no_gpu_check:
+        cfg.gpu_check = False
+    if args.keepalive:
+        cfg.keep_alive = args.keepalive
 # -- session persistence ------------------------------------------------
 
 def _load_session(path: str) -> list:
@@ -184,6 +207,13 @@ def _banner(cfg: Config, session_file: str, resumed: bool) -> None:
     print(f" session   : {session_file} ({'resumed' if resumed else 'new'})")
     print(f" context   : {cfg.num_ctx} tokens | temp {cfg.temperature} "
           f"| think {'on' if cfg.think else 'off'}")
+    gpus = gpu.probe_gpus()
+    if gpus:
+        g = gpus[0]
+        print(f" gpu       : {g.name} ({g.free_mb / 1024:.1f} GB free "
+              f"of {g.total_mb / 1024:.1f} GB)")
+    else:
+        print(" gpu       : none detected (inference runs on the CPU)")
     print(f" approve   : {'auto (--yolo)' if cfg.auto_approve else 'prompted'}")
     print(" Ctrl+C stops the current task; 'exit' quits & saves for later.")
     print(" Type a task, then Enter. 'new' clears the conversation.")
@@ -257,6 +287,41 @@ def main(argv=None) -> int:
             "  • Verify the model name with `ollama list`."
         )
         return 1
+
+    if args.gpu:
+        print(gpu.report(cfg, llm))
+        return 0
+
+    if args.benchmark is not None:
+        bench_model = args.benchmark or cfg.model
+        ctx_note = f"num_ctx={args.ctx}" if args.ctx else "auto num_ctx"
+        print(f"\033[90m[benchmark] {bench_model} - generating up to 96 "
+              f"tokens ({ctx_note})...\033[0m")
+        try:
+            result = gpu.benchmark(cfg, llm, model=bench_model,
+                                   num_ctx=args.ctx)
+        except OllamaError as exc:
+            print(f"\033[31m{exc}\033[0m")
+            return 1
+        print(gpu.format_benchmark(result))
+        return 0
+
+    # GPU-aware defaults: shrink the context until the model fits in VRAM,
+    # and say so up front when the request is going to be CPU-bound anyway.
+    if cfg.auto_fit:
+        fitted = gpu.suggest_ctx(cfg, llm)
+        if fitted is None:
+            print("\033[33m[auto-fit] no VRAM budget for this model - "
+                  "keeping --ctx as it is.\033[0m")
+        elif fitted != cfg.num_ctx:
+            print(f"\033[90m[auto-fit] num_ctx {cfg.num_ctx} -> {fitted} "
+                  f"(so the model fits in VRAM)\033[0m")
+            cfg.num_ctx = fitted
+
+    if cfg.gpu_check:
+        warning = gpu.startup_warning(cfg, llm)
+        if warning:
+            print(f"\033[33m[gpu] {warning}\033[0m")
 
     interactive = not bool(args.task)
     session_file = None

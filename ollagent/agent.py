@@ -17,6 +17,37 @@ from .tools import TOOL_SCHEMAS, ToolContext, ToolError, ToolResult, dispatch
 _TAG_RE = re.compile(r"\{(?:[^{}]|\{[^{}]*\})*\}")
 
 
+def _unwrap_arg(value: Any) -> Any:
+    """Strip ``{"type": "string", "value": "..."}`` argument wrappers.
+
+    Small models sometimes emit JSON-schema-style values instead of plain
+    ones, which would otherwise be written to disk verbatim.
+    """
+    if isinstance(value, dict) and set(value) == {"type", "value"}:
+        return value["value"]
+    if isinstance(value, dict):
+        return {k: _unwrap_arg(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_unwrap_arg(v) for v in value]
+    return value
+
+
+def _normalize_tool_call(obj: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+    """Translate Ollama's native wire shape into the JSON protocol.
+
+    Some models advertise the ``tools`` capability and then *print* the call
+    instead of filling ``message.tool_calls``; Ollama passes that text through
+    untouched. The shape they imitate is ``{"name": ..., "arguments": ...}``,
+    so accept it — along with the documented ``{"tool": ...}`` form.
+    """
+    if obj.get("tool"):
+        return dict(obj)
+    name, args = obj.get("name"), obj.get("arguments")
+    if isinstance(name, str) and isinstance(args, dict):
+        return {"tool": name, "arguments": _unwrap_arg(args)}
+    return None
+
+
 def _schema_params(schema: Mapping[str, Any]) -> str:
     props = schema.get("parameters", {}).get("properties", {})
     required = schema.get("parameters", {}).get("required", [])
@@ -184,12 +215,27 @@ class Agent:
                             break
                         continue
                     if reply.strip():
-                        # No tool call → the model's plain conversational answer.
-                        self.messages.append({"role": "assistant",
-                                              "content": reply})
-                        final = reply
-                        break
-                    continue  # empty reply — _chat_raw already retried
+                        # No tool_calls came back. Some models advertise the
+                        # `tools` capability and then print the call as text
+                        # (Ollama does not parse it), so if this reply looks
+                        # like a tool call or a protocol answer, fall through to
+                        # the JSON handling below instead of ending the turn.
+                        parsed = self._try_parse(reply)
+                        normalized = (_normalize_tool_call(parsed)
+                                      if isinstance(parsed, dict) else None)
+                        if not isinstance(parsed, dict) or (
+                                normalized is None
+                                and not parsed.get("done")
+                                and parsed.get("type") != "answer"
+                                and "answer" not in parsed):
+                            # A genuinely conversational reply.
+                            self.messages.append({"role": "assistant",
+                                                  "content": reply})
+                            final = reply
+                            break
+                        reply = json.dumps(normalized or parsed)
+                    else:
+                        continue  # empty reply — _chat_raw already retried
                 decision = self._parse(reply, self.messages)
                 if isinstance(decision, ToolResult):
                     if decision.conversational:
@@ -337,8 +383,16 @@ class Agent:
                 return ToolResult(text, should_stop=True, conversational=True)
             # Fall through to tool handling if empty.
 
-        if obj.get("done"):
-            return ToolResult(f"DONE: {obj.get('answer', '')}", should_stop=True)
+        done = obj.get("done")
+        if done:
+            # `done` arrives as true, as a string, or (often, from small
+            # models) as an object carrying the summary itself.
+            answer = obj.get("answer")
+            if not answer and isinstance(done, dict):
+                answer = done.get("summary") or done.get("answer") or ""
+            if not answer and isinstance(done, str):
+                answer = done
+            return ToolResult(f"DONE: {answer or ''}", should_stop=True)
 
         tool = obj.get("tool")
         if not tool:

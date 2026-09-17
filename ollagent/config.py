@@ -46,6 +46,20 @@ class Config:
     chat: bool = False
     workspace: str = field(default_factory=os.getcwd)
 
+    # -- GPU awareness ---------------------------------------------------
+    # Warn before a request when the model cannot fit in VRAM and will
+    # therefore run on the CPU (3-4x slower for small models). Disable with
+    # --no-gpu-check, or OLLAGENT_GPU_CHECK=0.
+    gpu_check: bool = True
+    # Automatically shrink num_ctx until the model should fit in VRAM.
+    auto_fit: bool = False
+    # Keep the model resident between runs (e.g. "30m"); "" = server default.
+    # Useful on machines where a GPU-offloaded model is expensive to reload.
+    keep_alive: str = ""
+    # VRAM left untouched for the desktop/compositor, in MB, so offloading a
+    # model does not starve the display server.
+    reserve_vram_mb: int = 400
+
 
 def from_env() -> Config:
     """Build a Config from environment variables."""
@@ -54,4 +68,8 @@ def from_env() -> Config:
         cfg.model = os.environ["OLLAGENT_MODEL"]
     if os.environ.get("OLLAGENT_URL"):
         cfg.ollama_url = os.environ["OLLAGENT_URL"]
+    if os.environ.get("OLLAGENT_KEEP_ALIVE"):
+        cfg.keep_alive = os.environ["OLLAGENT_KEEP_ALIVE"]
+    if os.environ.get("OLLAGENT_GPU_CHECK", "").lower() in ("0", "false", "no", "off"):
+        cfg.gpu_check = False
     return cfg

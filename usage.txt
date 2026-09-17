@@ -1,0 +1,184 @@
+OLLAGENT — USAGE GUIDE
+======================
+
+A local terminal coding agent for your own Ollama models.
+Reads code, edits files, runs shell commands, verifies its work — looping
+until the task is done. No cloud, no API keys, zero pip dependencies.
+
+REQUIREMENTS
+------------
+- Python 3.9+
+- Ollama running locally (start with:  ollama serve)
+- At least one model pulled:        ollama pull <model>
+  Check what you have:              ollama list
+
+QUICK START
+-----------
+  # one-shot task (agent mode — can read/edit files, run commands)
+  python3 -m ollagent --model qwen2.5-coder:7b --ctx 4096 \
+      "create hello.py that prints hello world, then run it to verify"
+
+  # just asking a question (chat mode, no tools — auto-detected)
+  python3 -m ollagent --model qwen2.5-coder:7b "what is a script?"
+
+  # interactive session
+  python3 -m ollagent --model qwen2.5-coder:7b
+
+  # list models on the server
+  python3 -m ollagent --list-models
+
+CHAT vs AGENT (auto-routing)
+----------------------------
+Every message is routed before the model sees it:
+  - Questions ("what is...", "why does...", ends with "?")
+      -> chat mode: plain natural-language answer, no tools
+  - Tasks containing action verbs (create, fix, run, edit, ...)
+      -> agent mode: the full tool loop
+Force chat mode with --chat.
+
+THE TOOL LOOP (agent mode)
+--------------------------
+The model proposes a tool call, ollagent executes it, feeds the output
+back, and repeats until the model calls `done`:
+  read_file / write_file / edit_file / list_files / search_files /
+  run_command / done
+
+Models with Ollama native tool-calling support (check with
+`ollama show <model>` -> capabilities) use native function calling.
+Other models automatically fall back to a JSON-prompt protocol.
+
+INTERACTIVE SESSION COMMANDS
+----------------------------
+  <task text>       run a task or ask a question
+  new               clear the conversation
+  exit / quit / q   save session and leave
+  Ctrl+C            stop the current task only (conversation is kept)
+
+SESSIONS
+--------
+- Interactive sessions auto-save to .ollagent_session.json in the
+  workspace and resume automatically next time.
+  Run ollagent in the same folder to pick up where you left off.
+- --session FILE   use a named session file (e.g. one per feature branch)
+- --fresh          ignore the saved session, start clean
+
+CLI REFERENCE
+-------------
+  python3 -m ollagent [options] [task ...]
+
+  --model MODEL        Ollama model (default: huihui_ai/qwen3.5-abliterated:9b)
+  --url URL            Ollama server URL (default: http://localhost:11434)
+  --ctx N              context window in tokens
+  --temp F             sampling temperature (default 0.1)
+  --max-iterations N   cap on tool-loop iterations (default 25)
+  --think              enable the model's thinking/reasoning phase
+  --yolo               auto-approve all file writes & shell commands
+  --no-sandbox         allow file access outside the workspace
+  --cwd DIR            workspace directory (default: current dir)
+  --session FILE       session file to load/save
+  --fresh              ignore any saved session
+  --chat               force conversational mode (no tools)
+  --list-models        list models on the server and exit
+  --gpu                GPU/VRAM report + offload + which models fit, then exit
+  --benchmark [MODEL]  measure real tokens/second and GPU offload, then exit
+  --auto-fit           shrink --ctx so the model fits in VRAM (stays on GPU)
+  --no-gpu-check       skip the startup warning about CPU-bound inference
+  --keepalive DURATION keep the model loaded between runs (30m, -1 = forever)
+
+Environment overrides: OLLAMA_MODEL, OLLAMA_URL, OLLAGENT_KEEP_ALIVE,
+                       OLLAGENT_GPU_CHECK=0
+
+SAFETY
+------
+- Sandboxed by default: file access is confined to the workspace.
+- Writes and shell commands prompt for approval unless --yolo.
+- --yolo is for throwaway/scratch directories only.
+
+RECOMMENDED SETTINGS
+--------------------
+- Reasoning models (qwen3.5 etc.): leave thinking OFF (the default).
+  Reasoning can burn the whole context window and return empty answers.
+  Opt in with --think if you want it anyway.
+- CPU-only machines: --ctx 4096 is a good starting point.
+- GPU machines: pick a model whose size fits your VRAM (see --gpu) and let
+  --auto-fit choose the context; --benchmark reports the real tok/s.
+- If a reply comes back empty, ollagent automatically retries with a
+  LARGER context (up to 32k) — truncation is the usual cause, so
+  shrinking the window would only make it worse.
+
+GPU (NVIDIA)
+------------
+Ollama does the inference; ollagent reports whether it is using your GPU.
+A model larger than VRAM silently runs 100% on the CPU (3-4x slower), and a
+context larger than the card can hold makes the runner abort outright.
+
+  python3 -m ollagent --gpu
+      Card + VRAM total/used/free, the budget left for a model, how much of
+      each LOADED model is really in VRAM, and which installed models fit.
+
+  python3 -m ollagent --benchmark [MODEL]
+      Real tokens/second plus the GPU offload ratio, then exits.
+
+  python3 -m ollagent --auto-fit "task text"
+      Shrinks num_ctx to the largest value that keeps the model on the GPU
+      and prints what it did: [auto-fit] num_ctx 16000 -> 6656.
+
+  python3 -m ollagent --keepalive 30m "task text"
+      Keeps the loaded model (and its VRAM allocation) alive between runs.
+
+A startup warning fires when the request cannot use the GPU -- either the
+model does not fit, or --ctx is larger than the card can hold. Silence it
+with --no-gpu-check or OLLAGENT_GPU_CHECK=0.
+
+How the fit estimate works: a model's resident footprint is about 1.2x its
+download size (weights + KV cache + compute buffers), each token of context
+costs roughly 0.2 MB, and 400 MB of VRAM is left for the desktop. These are
+estimates -- --benchmark measures the truth on your hardware.
+
+TROUBLESHOOTING
+---------------
+  "Could not reach Ollama"     start the server: ollama serve
+  Model not found              ollama list, copy the exact name
+  Empty / blank responses      leave thinking off; ollagent auto-retries
+                               with a larger context; or raise --ctx
+  Model reloads every run      export OLLAMA_KEEP_ALIVE=-1 on the server
+                               (or pass --keepalive 30m)
+  GPU not used / very slow     run --gpu: use a model that fits VRAM, then
+                               --auto-fit to shrink the context
+  "llama runner process has    --ctx is larger than the card can hold; use
+   terminated"                 --auto-fit, or a smaller --ctx
+  Remote Ollama                export OLLAMA_HOST=0.0.0.0:11434 on the
+                               server, then --url http://host:11434
+
+RUNNING ON FREE CLOUD GPUs (Kaggle / Colab)
+-------------------------------------------
+1. Enable GPU accelerator + Internet in the notebook settings.
+2. Install Ollama (needs pciutils + zstd on Kaggle):
+     !apt-get install -y pciutils zstd
+     !curl -fsSL https://ollama.com/install.sh | sh
+3. Start the server in the background:
+     import subprocess, os
+     os.environ['OLLAMA_HOST'] = '0.0.0.0:11434'
+     server = subprocess.Popen(['ollama', 'serve'],
+                               stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL)
+4. Get a model. If `ollama pull hf.co/...` fails with a realm/host
+   error, download the GGUF directly and import it:
+     !pip install -q huggingface_hub
+     from huggingface_hub import hf_hub_download
+     gguf = hf_hub_download("mradermacher/Huihui-Qwen3.5-4B-abliterated-GGUF",
+                            "Huihui-Qwen3.5-4B-abliterated.Q4_K_M.gguf")
+     open("Modelfile", "w").write(f"FROM {gguf}\n")
+     !ollama create qwen35-abl:4b -f Modelfile
+5. Run ollagent from the repo:
+     !git clone https://github.com/gmoralesm-dev/ollagent.git
+     %cd ollagent
+     !python3 -m ollagent --model qwen35-abl:4b --ctx 4096 --yolo \
+         --cwd /kaggle/working "your task here"
+
+Expect answers in seconds instead of minutes vs a CPU-only laptop.
+Verify GPU usage with:  !ollama ps   (PROCESSOR column should say GPU)
+
+VERSION
+-------
+0.5.0

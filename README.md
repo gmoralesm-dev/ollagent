@@ -1,6 +1,6 @@
 <div align="center">
 
-[![Version](https://img.shields.io/badge/version-0.4.0-8B5CF6?style=for-the-badge)](https://github.com/gmoralesm-dev/ollagent/releases)
+[![Version](https://img.shields.io/badge/version-0.5.0-8B5CF6?style=for-the-badge)](https://github.com/gmoralesm-dev/ollagent/releases)
 [![Python](https://img.shields.io/badge/python-3.9%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-green?style=for-the-badge)](LICENSE)
 [![Stars](https://img.shields.io/github/stars/gmoralesm-dev/ollagent?style=for-the-badge&color=yellow)](https://github.com/gmoralesm-dev/ollagent/stargazers)
@@ -90,6 +90,60 @@ new             clears the conversation
 
 Run `ollagent` again in the same folder and it picks up exactly where you left off — the model keeps its full prior context.
 
+## 🎮 GPU awareness
+
+Ollama does the inference, so Ollagent needs no GPU itself — but it does need
+to know whether **Ollama** is using yours. A model that is too big for VRAM
+silently runs 100% on the CPU (3-4× slower), and a context that is too large
+for the card makes the runner abort outright. Both are invisible until you
+look, so Ollagent looks for you.
+
+```bash
+python3 -m ollagent --gpu                    # VRAM, offload, model fit table
+python3 -m ollagent --benchmark              # real tok/s + GPU offload ratio
+python3 -m ollagent --auto-fit --model qwen2.5-coder:3b "fix the parser"
+```
+
+`--gpu` answers three questions:
+
+| Section | What it tells you |
+|---|---|
+| **GPU** | card, VRAM total/used/free, and the budget left for a model |
+| **LOADED NOW** | how much of each resident model is *really* in VRAM (from `/api/ps`: `size_vram / size`) |
+| **INSTALLED MODELS** | which of your models fit, and the largest context that keeps them offloaded |
+
+On a 4 GB laptop GPU that looks like this:
+
+```
+  budget: 3.6 GB usable for a model (capacity minus 400 MB reserve)
+
+  qwen2.5-coder:3b                             1.93 GB  fits — up to ~6656 ctx on GPU
+  huihui_ai/qwen3.5-abliterated:9b             6.59 GB  too big — will run on the CPU
+```
+
+Beyond the reports, two behaviours change:
+
+- **A startup warning** when the request will be CPU-bound — either because the
+  model cannot fit, or because `--ctx` exceeds what the card can hold. Silence
+  it with `--no-gpu-check`, or set `OLLAGENT_GPU_CHECK=0`.
+- **`--auto-fit`** shrinks `num_ctx` to the largest value that should keep the
+  model in VRAM, and says what it did (`[auto-fit] num_ctx 16000 -> 6656`).
+
+`--benchmark` ends with the offload line, so a slow number is explained rather
+than guessed at:
+
+```
+Benchmark — qwen2.5-coder:3b
+  load       : 1.7 s
+  prompt     : 44 tok = 55.2 tok/s
+  generation : 92 tok = 12.14 tok/s
+  offload    : 100% GPU (2.39 of 2.39 GB in VRAM)
+```
+
+> **CPU-only machines:** nothing here changes your defaults. `--gpu` simply
+> reports "none detected", no warning fires, and `--auto-fit` leaves `--ctx`
+> alone.
+
 ## 📦 CLI reference
 
 ```
@@ -107,6 +161,11 @@ python3 -m ollagent --help
   --yolo                 auto-approve writes & commands (use scratch dirs!)
   --no-sandbox           allow access outside the workspace
   --list-models          list models on the server
+  --gpu                  GPU/VRAM report, offload of loaded models, fit table
+  --benchmark [MODEL]    measure real tok/s + GPU offload, then exit
+  --auto-fit             shrink --ctx so the model fits in VRAM
+  --no-gpu-check         skip the CPU-bound startup warning
+  --keepalive DURATION   keep the model loaded (e.g. 30m, -1 = forever)
 ```
 
 ## 🏗️ Architecture
@@ -117,6 +176,7 @@ ollagent/
 ├── agent.py    # the loop: system prompt, JSON parsing, retry logic
 ├── tools.py    # tool implementations, sandboxing, approvals, sanitizer
 ├── client.py   # stdlib-only Ollama HTTP client
+├── gpu.py      # VRAM/offload reporting, fit heuristics, benchmark
 └── config.py   # settings & env overrides
 ```
 
@@ -126,6 +186,12 @@ Design decisions worth knowing:
 - **Thinking off by default (`--think` to enable)** — reasoning models like qwen3.5 can spend the whole context window thinking and return an empty answer; Ollagent disables the thinking phase unless you ask for it.
 - **Smart-quote sanitizer** — small models love writing `’` instead of `'`, which breaks code. Ollagent normalizes typographic quotes on every write/edit to code files.
 - **Empty-response retry grows the context** — when a model stops with an empty reply (typically `done_reason: "length"` after a long thinking phase), shrinking the window makes it worse, so Ollagent doubles `num_ctx` (up to 32k) and retries instead.
+- **Text tool calls are accepted too** — some models advertise the `tools`
+  capability and then *print* the call as text (`{"name": ..., "arguments": ...}`)
+  without ever filling `message.tool_calls`; Ollama passes that through
+  untouched. Ollagent recognizes both shapes, unwraps JSON-schema-style
+  argument values, and runs the call instead of ending the turn. Without this,
+  such a model answers "I'll write the file" and quietly does nothing.
 
 ## 🔧 Ollama troubleshooting
 
@@ -135,7 +201,8 @@ Design decisions worth knowing:
 | Model reloads every run | `export OLLAMA_KEEP_ALIVE=-1` on the server |
 | Browser apps get CORS errors | `export OLLAMA_ORIGINS="*"` (not needed for this CLI) |
 | Remote Ollama | `export OLLAMA_HOST=0.0.0.0:11434`, then `--url http://host:11434` |
-| GPU not used | install the vendor driver; verify with `nvidia-smi`, check `ollama ps` |
+| GPU not used / very slow | run `--gpu`: use a model that fits VRAM, then `--auto-fit` |
+| `llama runner process has terminated` | `--ctx` is larger than the card can hold — use `--auto-fit` |
 
 ## 📚 Built with the LAZY-LOL methodology
 

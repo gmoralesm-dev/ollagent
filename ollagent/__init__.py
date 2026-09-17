@@ -6,5 +6,5 @@ them (file reads/writes, searches, shell commands), and feeds results back
 until the task is complete. No browser, no UI - just the terminal.
 """
 
-__version__ = "0.4.0"
-__all__ = ["client", "tools", "agent", "cli", "config"]
+__version__ = "0.5.0"
+__all__ = ["client", "tools", "agent", "cli", "config", "gpu"]
