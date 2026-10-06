@@ -308,15 +308,15 @@ def main(argv=None) -> int:
 
     # GPU-aware defaults: shrink the context until the model fits in VRAM,
     # and say so up front when the request is going to be CPU-bound anyway.
-    if cfg.auto_fit:
-        fitted = gpu.suggest_ctx(cfg, llm)
-        if fitted is None:
+    fitted = gpu.suggest_ctx(cfg, llm)
+    if fitted is None:
+        if cfg.auto_fit:
             print("\033[33m[auto-fit] no VRAM budget for this model - "
                   "keeping --ctx as it is.\033[0m")
-        elif fitted != cfg.num_ctx:
-            print(f"\033[90m[auto-fit] num_ctx {cfg.num_ctx} -> {fitted} "
-                  f"(so the model fits in VRAM)\033[0m")
-            cfg.num_ctx = fitted
+    elif fitted != cfg.num_ctx:
+        print(f"\033[90m[auto-fit] num_ctx {cfg.num_ctx} -> {fitted} "
+              f"(so the model fits in VRAM)\033[0m")
+        cfg.num_ctx = fitted
 
     if cfg.gpu_check:
         warning = gpu.startup_warning(cfg, llm)
